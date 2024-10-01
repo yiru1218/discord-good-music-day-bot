@@ -26,8 +26,8 @@ const commands = [
     description: 'View the current song queue',
   },
   {
-    name: 'pause',
-    description: 'Pause the current song',
+    name: 'shuffle',
+    description: 'shuffle the current queue',
   },
 ];
 

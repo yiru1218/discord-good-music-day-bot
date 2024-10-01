@@ -1,7 +1,7 @@
 require('dotenv').config(); // 加載 .env 文件中的變數
 const { DISCORD_BOT_TOKEN, FFMPEG_PATH } = process.env;
 
-const { Client, GatewayIntentBits, StringSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, StringSelectMenuBuilder, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { DisTube } = require('distube');
 const { YtDlpPlugin } = require('@distube/yt-dlp');
 const ytSearch = require('yt-search'); // 引入 yt-search 模組
@@ -22,7 +22,7 @@ const client = new Client({
 
 // 初始化 DisTube
 const distube = new DisTube(client, {
-  plugins: [new YtDlpPlugin()],
+  plugins: [new YtDlpPlugin({ update: true })],
   ffmpeg: {
     path: FFMPEG_PATH
   }
@@ -119,11 +119,23 @@ client.on('messageCreate', async (message) => {
     }
 
     if (url && message.member.voice.channel) {
-      distube.play(message.member.voice.channel, url, {
-        member: message.member,
-        textChannel: message.channel,
-        message
-      });
+      // 記錄抓音樂開始時間
+      const addListStartTime = Date.now();
+      console.log('開始抓音樂:', new Date(addListStartTime).toLocaleTimeString());
+    
+      try {
+        await distube.play(message.member.voice.channel, url, {
+          member: message.member,
+          textChannel: message.channel,
+          message
+        });
+      } catch (error) {
+        if (error.errorCode === 'YTDLP_ERROR') {
+          console.log('抓音樂失敗', new Date(addListStartTime).toLocaleTimeString());
+          return;
+        }
+      }
+
     } else {
       message.reply('你需要先加入語音頻道！');
     }
@@ -145,6 +157,12 @@ client.on('messageCreate', async (message) => {
       message.reply('目前沒有任何歌曲在播放！');
     } else {
       distube.shuffle(queue); // 使用 shuffle 方法打亂隊列
+      // 回覆新的播放列表
+      const newQueue = queue.songs.map((song, index) =>
+        `**${index + 1}**. [${song.name}](${song.url}) - \`${song.formattedDuration}\``
+      ).slice(0, 10).join('\n');
+
+      message.channel.send(`🔀 新的播放順序：\n${newQueue}`);
     }
   }
 
@@ -173,25 +191,120 @@ distube.on('finish', async (queue) => {
   queue.textChannel.send('Nothing playing right now!');
 
   // 確保之前播放的歌曲存在，並且只在隊列完全播放完畢時才推薦
-  
+
 });
 
+const createProgressBar = (currentTime, duration, barLength = 20) => {
+  const progress = Math.round((currentTime / duration) * barLength);
+  const remaining = barLength - progress;
+  return '█'.repeat(progress) + '░'.repeat(remaining);
+};
+
+const createEmbed = (song, currentTime = 0) => {
+  const elapsedMinutes = Math.floor(currentTime / 60);
+  const elapsedSeconds = Math.floor(currentTime % 60).toString().padStart(2, '0');
+  const elapsed = `${elapsedMinutes}:${elapsedSeconds}`;
+
+  return new EmbedBuilder()
+    .setColor('#1DB954') // Spotify 綠色
+    .setTitle(`🎶 ${song.name}`)
+    .addFields(
+      { name: '🔊', value: ` ${elapsed} / ${song.formattedDuration}` },
+      // { name: '🔊 進度條', value: `\`\`\`${progressBar}\`\`\`` }
+    )
+    .setThumbnail(song.thumbnail);
+};
+
+const updateMessage = async (queue, message, buttons) => {
+  const currentSong = queue.songs[0];
+  const currentTime = queue.currentTime;
+  // const progressBar = createProgressBar(currentTime, currentSong.duration);
+
+  const embed = createEmbed(currentSong, currentTime);
+
+  await message.edit({ embeds: [embed], components: [buttons] });
+};
 
 distube
   .on('playSong', async (queue, song) => {
     // const voiceChannel = queue.voiceChannel || queue.member.voice.channel; // 從 queue 中獲取語音頻道
     // const songName = song.name.length > 20 ? song.name.slice(0, 20) + '...' : song.name;
-    
+    // try {
+    //   await client.user.setActivity(`🎶 ${song.name}`, { type: 'LISTENING' });
+    //   console.log(`機器人狀態已更新為: 正在播放 ${song.name}`);
+    // } catch (error) {
+    //   console.error(`無法更新機器人狀態: ${error}`);
+    // }
     console.log(`正在播放: ${song.name}`);
+    // if (message) {
+    //   await updateEmbedMsg(queue);
+    // }
   })
 
-  .on('addList', (queue, playlist) => {
-    console.log(`添加播放清單: ${playlist.name}`);
+  .on('addList', async (queue, playlist) => {
+    const playTime = Date.now();
+    console.log('抓完音樂:', new Date(playTime).toLocaleTimeString());
+
+    const firstSong = playlist.songs[0];
+    // const progressBar = createProgressBar(0, firstSong.duration);
+    const embed = createEmbed(firstSong, 0);
+
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('next')
+        .setLabel('下一首')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('refresh')
+        .setLabel('更新')
+        .setStyle(ButtonStyle.Primary),
+
+    );
+
+    const message = await queue.textChannel.send({ embeds: [embed], components: [buttons] });
+
+    // 按鈕交互處理邏輯
+    const filter = i => ['refresh', 'next'].includes(i.customId);
+    const collector = message.createMessageComponentCollector({ filter });
+
+    collector.on('collect', async i => {
+      if (i.customId === 'refresh') {
+        await updateMessage(queue, message, buttons);
+        await i.update({});
+      }
+      if (i.customId === 'next') {
+        try {
+          // 跳過到下一首
+          await queue.skip();
+
+          // 跳過到下一首後，立即刷新嵌入消息
+          await updateMessage(queue, message, buttons);
+          await i.update({});
+        } catch (error) {
+          console.error('跳到下一首時發生錯誤:', error);
+          await i.update({});
+        }
+      }
+    });
   })
 
-  .on('error', (channel, error) => {
-    console.error(`播放時發生錯誤: ${error}`);
+  .on('error', (queue, error) => {
+    console.error(`播放清單或歌曲時發生錯誤: ${error.message}`);
+    queue.textChannel?.send(`播放清單中的某首歌曲發生錯誤: ${error.message}`);
+    
+    // 自動跳過錯誤歌曲
+    const song = queue.songs[0];
+    if (song) {
+      queue.textChannel?.send(`正在跳過發生錯誤的歌曲: ${song.name}`);
+      try {
+        distube.skip(queue);
+      } catch (err) {
+        console.error('跳過歌曲時發生錯誤:', err);
+        queue.textChannel?.send('無法跳過該歌曲，可能需要手動干預。');
+      }
+    }
   });
+
 
 // 登入機器人
 client.login(DISCORD_BOT_TOKEN);
