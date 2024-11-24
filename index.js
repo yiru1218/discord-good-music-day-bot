@@ -5,6 +5,7 @@ const { Client, GatewayIntentBits, StringSelectMenuBuilder, ActionRowBuilder, Em
 const { DisTube } = require('distube');
 const { YtDlpPlugin } = require('@distube/yt-dlp');
 const ytSearch = require('yt-search'); // 引入 yt-search 模組
+const fs = require('fs');
 
 const ffmpeg = require('@ffmpeg-installer/ffmpeg'); // 引用 ffmpeg 模組
 // const { generateDependencyReport } = require('@discordjs/voice');
@@ -117,9 +118,18 @@ client.on('messageCreate', async (message) => {
           message
         });
       } catch (error) {
-        console.log(error)
         if (error.errorCode === 'YTDLP_ERROR') {
           message.reply({ content: '抓音樂失敗！', ephemeral: true });
+          const errorMessage = `插入歌曲時發生錯誤: ${error.message || error}\n堆疊資訊: ${error.stack || '無'}\n`;
+
+          // 將錯誤訊息寫入 errors.txt
+          fs.appendFile('errors.txt', errorMessage, (err) => {
+            if (err) {
+              console.error('無法寫入錯誤訊息到檔案:', err);
+            } else {
+              console.log('錯誤訊息已成功寫入 errors.txt');
+            }
+          });
         }
       }
 
@@ -337,10 +347,7 @@ client.on('messageCreate', async (message) => {
     const collector = messageEmbed.createMessageComponentCollector({ filter });
 
     collector.on('collect', async (interaction) => {
-      if (interaction.user.id !== message.author.id) {
-        await interaction.reply({ content: '你無法操作這些按鈕！', ephemeral: true });
-        return;
-      }
+
 
       try {
         switch (interaction.customId) {
@@ -591,7 +598,6 @@ distube
             } else {
               await distube.stop(queue);
             }
-            currentPage = 0; // 重置頁數
             break;
           case 'shuffle':
             await distube.shuffle(queue); // 打亂播放清單
